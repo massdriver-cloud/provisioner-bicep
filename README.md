@@ -19,6 +19,7 @@ The following configuration options are available:
 
 | Configuration Option | Type | Default | Description |
 |-|-|-|-|
+| `azure_service_principal` | object | `.connections.azure_service_principal` | `jq` path to a `massdriver/azure-service-principal` connection for authentication to Azure |
 | `region` | string | `"eastus"` | Azure region to deploy template resources into. Defaults to `"eastus"`. |
 | `resource_group` | string | \<package name> | Specifies the resource group name. Defaults to the Massdriver package name if not specified. |
 | `delete_resource_group` | boolean | `true` | Determines whether the resource group will be deleted during decommissioning. |
