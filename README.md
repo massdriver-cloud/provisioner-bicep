@@ -177,7 +177,7 @@ In this case, the input to the `artifact_storage_account.jq` template file would
 
 Thus, the `artifact_storage_account.jq` file would simply be:
 
-```json
+```jq artifact_storage_account.jq
 .outputs.artifact_storage_account.value
 ```
 
@@ -226,7 +226,7 @@ In this case, the input to the `artifact_storage_account.jq` template file would
 
 Now the artifact structure must be built through the `artifact_storage_account.jq` template:
 
-```json
+```jq artifact_storage_account.jq
 {
     "data":  {
         "infrastructure": {
