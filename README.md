@@ -104,7 +104,7 @@ artifacts:
       $ref: massdriver/azure-storage-account-blob
 ```
 
-In this example a file named `artifact_storage_account.jq` would need to be in the template directory and the provisioner would use this file as a JQ template, passing the params, connections and outputs to it. There are two approaches to building the proper artifact structure:
+Since the artifact is named `storage_account` a file named `artifact_storage_account.jq` would need to be in the template directory and the provisioner would use this file as a JQ template, passing the params, connections and outputs to it. There are two approaches to building the proper artifact structure:
 1. Fully render the artifact in the Bicep output
 2. Build the artifact structure using the JQ template
 
