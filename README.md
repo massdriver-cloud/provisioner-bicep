@@ -62,7 +62,7 @@ In order to view the structure of the params and connections fields you can run 
 
 ## Artifacts
 
-After every provision, this provider will scan the template directory for files matching the pattern `artifact_<name>.jq`. If a file matching this pattern is present, it will be used as a JQ template to render and publish a Massdriver artifact. The inputs to the JQ template will be a JSON object with the params, connections and [Bicep outputs](https://learn.microsoft.com/en-us/azure/azure-resource-manager/bicep/outputs?tabs=azure-powershell) as top level fields. The `outputs` field is copied directly from the output of the Bicep command. These output fields have the same format mentioned in the above Inputs section, where the value of the output is nested underneath a `value` block. This is something to be aware of when referencing the values in a Bicep output. You'll see this pattern reflected in the examples below.
+After every provision, this provider will scan the template directory for files matching the pattern `artifact_<name>.jq`. If a file matching this pattern is present, it will be used as a JQ template to render and publish a Massdriver artifact. The inputs to the JQ template will be a JSON object with the params, connections, envs, secrets and [Bicep outputs](https://learn.microsoft.com/en-us/azure/azure-resource-manager/bicep/outputs?tabs=azure-powershell) as top level fields. The `outputs` field is copied directly from the output of the Bicep command. These output fields have the same format mentioned in the above Inputs section, where the value of the output is nested underneath a `value` block. This is something to be aware of when referencing the values in a Bicep output. You'll see this pattern reflected in the examples below.
 
 ```json
 {
@@ -70,6 +70,12 @@ After every provision, this provider will scan the template directory for files 
         ...
     },
     "connections": {
+        ...
+    },
+    "envs": {
+        ...
+    },
+    "secrets": {
         ...
     },
     "outputs": {
@@ -154,6 +160,8 @@ In this case, the input to the `artifact_storage_account.jq` template file would
             }
         }
     },
+    "envs": {},
+    "secrets": {},
     "outputs": {
         "artifact_storage_account": {
             "value": {
@@ -211,6 +219,8 @@ In this case, the input to the `artifact_storage_account.jq` template file would
             }
         }
     },
+    "envs": {},
+    "secrets": {},
     "outputs": {
         "storageAccountEndpoint": {
             "type": "String",
