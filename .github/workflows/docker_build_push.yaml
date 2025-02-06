@@ -1,0 +1,45 @@
+name: Build and Push Docker Images
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        azure_cli_version: [2.68.0]  # Full semver versions
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract major.minor version and determine latest
+        id: version_processing
+        run: |
+          # Extract major.minor version (e.g., 1.2.3 -> 1.2)
+          VERSION="${{ matrix.azure_cli_version }}"
+          MAJOR_MINOR=$(echo "$VERSION" | awk -F. '{print $1"."$2}')
+          echo "MAJOR_MINOR_VERSION=$MAJOR_MINOR" >> $GITHUB_ENV
+
+          # Prepare a sorted list to determine the latest version
+          versions=($(echo "${{ join(matrix.azure_cli_version, ' ') }}" | tr ' ' '\n' | sort -V))
+          latest_full_version=${versions[-1]}
+          latest_major_minor=$(echo "$latest_full_version" | awk -F. '{print $1"."$2}')
+
+          echo "LATEST_MAJOR_MINOR_VERSION=$latest_major_minor" >> $GITHUB_ENV
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.PUBLIC_DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.PUBLIC_DOCKER_HUB_ACCESS_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: massdrivercloud/provisioner-bicep:${{ env.MAJOR_MINOR_VERSION }}${{ env.MAJOR_MINOR_VERSION == env.LATEST_MAJOR_MINOR_VERSION && ',massdrivercloud/provisioner-bicep:latest' || '' }}
+          build-args: AZURE_CLI_VERSION=${{ matrix.azure_cli_version }}
