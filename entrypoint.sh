@@ -1,6 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 
+# Define colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+NC='\033[0m' # No Color (reset)
+
 entrypoint_dir="/massdriver"
 
 params_path="$entrypoint_dir/params.json"
@@ -13,6 +18,7 @@ secrets_path="$entrypoint_dir/secrets.json"
 name_prefix=$(jq -r '.md_metadata.name_prefix' "$params_path")
 region=$(jq -r '.region // "eastus"' "$config_path")
 resource_group=$(jq -r --arg name_prefix "$name_prefix" '.resource_group // $name_prefix' "$config_path")
+create_resource_group=$(jq -r '.create_resource_group // true' "$config_path")
 delete_resource_group=$(jq -r '.delete_resource_group // true' "$config_path")
 
 # Extract Checkov configuration
@@ -46,7 +52,7 @@ fi
 
 # Check if azure_auth is still empty, and exit since we don't have auth info
 if [ -z "$azure_auth" ]; then
-  echo "Error: No Azure credentials found. Please refer to the provisioner documentation for specifying Azure credentials."
+  echo -e "${RED}Error: No Azure credentials found. Please refer to the provisioner documentation for specifying Azure credentials.${NC}"
   exit 1
 fi
 
@@ -54,10 +60,11 @@ fi
 azure_client_id=$(echo "$azure_auth" | jq -r '.data.client_id // empty')
 azure_client_secret=$(echo "$azure_auth" | jq -r '.data.client_secret // empty')
 azure_tenant_id=$(echo "$azure_auth" | jq -r '.data.tenant_id // empty')
+azure_subscription_id=$(echo "$azure_auth" | jq -r '.data.subscription_id // empty')
 
 for var in azure_client_id azure_client_secret azure_tenant_id; do
   if [ -z "${!var}" ]; then
-    echo "Error: Missing required field $var in azure_service_principal."
+    echo -e "${RED}Error: Missing required field $var in azure_service_principal.${NC}"
     exit 1
   fi
 done
@@ -74,6 +81,7 @@ if ! az login --service-principal -u "$azure_client_id" -p "$azure_client_secret
   echo "Authentication failed. Please check the Azure credentials and refer to provisioner documentation."
   exit 1
 fi
+az account set --subscription "$azure_subscription_id"
 echo "Authentication successful."
 
 # Handle deployment actions
@@ -83,13 +91,26 @@ case "$MASSDRIVER_DEPLOYMENT_ACTION" in
     evaluate_checkov
     echo "Executing plan..."
     az deployment group what-if --mode Complete --name "$resource_group-$MASSDRIVER_STEP_PATH" --resource-group "$resource_group" --template-file template.bicep --parameters @params.json --parameters @connections.json | tee outputs.json
+    echo -e "${GREEN}Plan complete!${NC}"
     ;;
 
   provision)
     evaluate_checkov
     echo "Provisioning resources..."
-    echo "Creating resource group $resource_group in region $region"
-    az group create --name "$resource_group" --location "$region"
+
+    if [ "$create_resource_group" = "true" ]; then
+      echo "Creating resource group $resource_group in region $region..."
+      az group create --name "$resource_group" --location "$region"
+      echo "Resource group $resource_group created."
+    else
+      echo "Checking if resource group $resource_group exists..."
+      if az group exists --name "$resource_group" | grep -q "true"; then
+        echo "Resource group exists! Using existing resource group $resource_group"
+      else
+        echo -e "${RED}Error: Resource group $resource_group does not exist. If 'create_resource_group' is false, the resource group must already exist in Azure. To avoid this error, set 'create_resource_group' to 'true' in the provisioner configuration, or create the resource group $resource_group before provisioning.${NC}"
+        exit 1
+      fi
+    fi
 
     echo "Deploying bundle"
     az deployment group create --mode Complete --name "$resource_group-$MASSDRIVER_STEP_PATH" --resource-group "$resource_group" --template-file template.bicep --parameters @params.json --parameters @connections.json | tee outputs.json
@@ -101,6 +122,8 @@ case "$MASSDRIVER_DEPLOYMENT_ACTION" in
       echo "Creating artifact for field $field"
       jq -f "$artifact_file" artifact_inputs.json | xo artifact publish -d "$field" -n "Artifact $field for $name_prefix" -f -
     done
+    
+    echo -e "${GREEN}Provision complete!${NC}"
     ;;
 
   decommission)
@@ -124,10 +147,12 @@ case "$MASSDRIVER_DEPLOYMENT_ACTION" in
       echo "Deleting artifact for field $field"
       xo artifact delete -d "$field" -n "Artifact $field for $name_prefix"
     done
+    
+    echo -e "${GREEN}Decommission complete!${NC}"
     ;;
 
   *)
-    echo "Error: Unsupported deployment action '$MASSDRIVER_DEPLOYMENT_ACTION'. Expected 'plan', 'provision', or 'decommission'."
+    echo -e "${RED}Error: Unsupported deployment action '$MASSDRIVER_DEPLOYMENT_ACTION'. Expected 'plan', 'provision', or 'decommission'.${NC}"
     exit 1
     ;;
 
