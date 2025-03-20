@@ -91,7 +91,6 @@ case "$MASSDRIVER_DEPLOYMENT_ACTION" in
     evaluate_checkov
     echo "Executing plan..."
     az deployment group what-if --mode Complete --name "$resource_group-$MASSDRIVER_STEP_PATH" --resource-group "$resource_group" --template-file template.bicep --parameters @params.json --parameters @connections.json | tee outputs.json
-    echo -e "${GREEN}Plan complete!${NC}"
     ;;
 
   provision)
@@ -122,8 +121,6 @@ case "$MASSDRIVER_DEPLOYMENT_ACTION" in
       echo "Creating artifact for field $field"
       jq -f "$artifact_file" artifact_inputs.json | xo artifact publish -d "$field" -n "Artifact $field for $name_prefix" -f -
     done
-    
-    echo -e "${GREEN}Provision complete!${NC}"
     ;;
 
   decommission)
@@ -147,8 +144,6 @@ case "$MASSDRIVER_DEPLOYMENT_ACTION" in
       echo "Deleting artifact for field $field"
       xo artifact delete -d "$field" -n "Artifact $field for $name_prefix"
     done
-    
-    echo -e "${GREEN}Decommission complete!${NC}"
     ;;
 
   *)
