@@ -18,6 +18,7 @@ secrets_path="$entrypoint_dir/secrets.json"
 name_prefix=$(jq -r '.md_metadata.name_prefix' "$params_path")
 region=$(jq -r '.region // "eastus"' "$config_path")
 resource_group=$(jq -r --arg name_prefix "$name_prefix" '.resource_group // $name_prefix' "$config_path")
+complete=$(jq -r '.complete // true' "$config_path")
 create_resource_group=$(jq -r '.create_resource_group // true' "$config_path")
 delete_resource_group=$(jq -r '.delete_resource_group // true' "$config_path")
 
@@ -84,13 +85,19 @@ fi
 az account set --subscription "$azure_subscription_id"
 echo "${GREEN}Authentication successful.${NC}"
 
+# Extract flags from provisioner config
+flags=""
+if [ "$complete" = "true" ]; then
+  flags="--mode Complete"
+fi
+
 # Handle deployment actions
 case "$MASSDRIVER_DEPLOYMENT_ACTION" in
 
   plan)
     evaluate_checkov
     echo "Executing plan..."
-    az deployment group what-if --mode Complete --name "$resource_group-$MASSDRIVER_STEP_PATH" --resource-group "$resource_group" --template-file template.bicep --parameters @params.json --parameters @connections.json | tee outputs.json
+    az deployment group what-if $flags --name "$resource_group-$MASSDRIVER_STEP_PATH" --resource-group "$resource_group" --template-file template.bicep --parameters @params.json --parameters @connections.json | tee outputs.json
     ;;
 
   provision)
@@ -112,7 +119,7 @@ case "$MASSDRIVER_DEPLOYMENT_ACTION" in
     fi
 
     echo "Deploying bundle"
-    az deployment group create --mode Complete --name "$resource_group-$MASSDRIVER_STEP_PATH" --resource-group "$resource_group" --template-file template.bicep --parameters @params.json --parameters @connections.json | tee outputs.json
+    az deployment group create $flags --name "$resource_group-$MASSDRIVER_STEP_PATH" --resource-group "$resource_group" --template-file template.bicep --parameters @params.json --parameters @connections.json | tee outputs.json
 
     jq -s '{params:.[0],connections:.[1],envs:.[2],secrets:.[3],outputs:.[4].properties.outputs}' "$params_path" "$connections_path" "$envs_path" "$secrets_path" outputs.json > artifact_inputs.json
     for artifact_file in artifact_*.jq; do
@@ -125,9 +132,8 @@ case "$MASSDRIVER_DEPLOYMENT_ACTION" in
 
   decommission)
     echo "Decommissioning resources..."
-    # Bicep doesn't have the concept of deleting resources, so we'll run "create --mode Complete" against an empty template which will delete the previously existing resources
     touch empty.bicep
-    az deployment group create --mode Complete --name "$resource_group-$MASSDRIVER_STEP_PATH" --resource-group "$resource_group" --template-file empty.bicep
+    az deployment group create $flags --name "$resource_group-$MASSDRIVER_STEP_PATH" --resource-group "$resource_group" --template-file empty.bicep
     rm empty.bicep
 
     echo "Deleting deployment group $resource_group-$MASSDRIVER_STEP_PATH"
