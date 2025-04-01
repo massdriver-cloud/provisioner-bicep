@@ -22,7 +22,7 @@ The following configuration options are available:
 | `azure_service_principal` | object | `.connections.azure_service_principal` | `jq` path to a `massdriver/azure-service-principal` connection for authentication to Azure |
 | `region` | string | `"eastus"` | Azure region to deploy template resources into. Defaults to `"eastus"`. |
 | `resource_group` | string | (package name) | Specifies the resource group name. Defaults to the Massdriver package name if not specified. |
-| `complete` | boolean | `true` | Sets the [Azure Resource Manager deployment mode](https://learn.microsoft.com/en-us/azure/azure-resource-manager/templates/deployment-modes) to "Complete" (sets the `--mode Complete` flag). If this is set to `false`, deployment mode will be "Incremental". |
+| `complete` | boolean | `true` | Sets the [Azure Resource Manager deployment mode](https://learn.microsoft.com/en-us/azure/azure-resource-manager/templates/deployment-modes) to "Complete" (sets the `--mode Complete` flag). If this is set to `false`, deployment mode will be "Incremental". For more information, refer to the [Deployment Mode](#deployment-mode) section |
 | `create_resource_group` | boolean | `true` | Determines whether the resource group will be created during provisioning. If this is set to `false`, the resource group must already exist in Azure. |
 | `delete_resource_group` | boolean | `true` | Determines whether the resource group will be deleted during decommissioning. |
 | `checkov.enable` | boolean |  `true` | Enables Checkov policy evaluation. If `false`, Checkov will not be run. |
@@ -38,7 +38,7 @@ In [Complete](https://learn.microsoft.com/en-us/azure/azure-resource-manager/tem
 
 #### Incremental
 
-In [Incremental](https://learn.microsoft.com/en-us/azure/azure-resource-manager/templates/deployment-modes#incremental-mode) mode, Resource manager will only ever create resources, never deleting them. This allows a bicep template to share a resource group without deleting resources from other templates. However, this also means that the lifecycle of resources isn't fully managed by the bicep template: only creations are managed, not deletions. This requires the user to manually clean up resources that are no longer needed (or specified in the template). It also means the "decommission" action in Massdriver effectively performs no action in Azure besides deleting the deployment group entry.
+In [Incremental](https://learn.microsoft.com/en-us/azure/azure-resource-manager/templates/deployment-modes#incremental-mode) mode, Resource manager will only ever create resources, never deleting them. This allows a bicep template to share a resource group without deleting resources from other templates. However, this also means that the lifecycle of resources isn't fully managed by the bicep template: only creations are managed, not deletions. This requires the user to manually clean up resources that are no longer needed (or specified in the template). It also means the "decommission" action in Massdriver effectively performs no action in Azure besides deleting the deployment group entry, leaving all resources to be cleaned up by the user.
 
 ## Inputs
 
