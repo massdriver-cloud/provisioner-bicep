@@ -97,7 +97,7 @@ case "$MASSDRIVER_DEPLOYMENT_ACTION" in
   plan)
     evaluate_checkov
     echo "Executing plan..."
-    az deployment group what-if $flags --name "$resource_group-$MASSDRIVER_STEP_PATH" --resource-group "$resource_group" --template-file template.bicep --parameters @params.json --parameters @connections.json | tee outputs.json
+    az deployment group what-if $flags --name "$resource_group-$MASSDRIVER_STEP_PATH" --resource-group "$resource_group" --template-file template.bicep --parameters @params.json --parameters @connections.json
     ;;
 
   provision)
