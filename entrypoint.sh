@@ -14,23 +14,20 @@ config_path="$entrypoint_dir/config.json"
 envs_path="$entrypoint_dir/envs.json"
 secrets_path="$entrypoint_dir/secrets.json"
 
-name_prefix=$(jq -r '.md_metadata.name_prefix' "$params_path")
+# Utility function for extracting JSON booleans with default values (since jq "//" doesn't work for properly for booleans)
+jq_bool_default() {
+  local query="${1:-}"
+  local default="${2:-}"
+  local data="${3:-}"
 
-# Extract provisioner configuration
-scope=$(jq -r '.scope // "group"' "$config_path")
-location=$(jq -r '.location // .region // "eastus"' "$config_path")
-complete=$(jq -r '.complete // true' "$config_path")
-
-# resource group scope settings
-resource_group=$(jq -r --arg name_prefix "$name_prefix" '.resource_group // $name_prefix' "$config_path")
-create_resource_group=$(jq -r '.create_resource_group // true' "$config_path")
-delete_resource_group=$(jq -r '.delete_resource_group // true' "$config_path")
-
-# Extract Checkov configuration
-checkov_enabled=$(jq -r '.checkov.enable // true' "$config_path")
-checkov_quiet=$(jq -r '.checkov.quiet // true' "$config_path")
-checkov_halt_on_failure=$(jq -r '.checkov.halt_on_failure // false' "$config_path")
-
+  if [ -z "$query" ] || [ -z "$default" ] || [ -z "$data" ]; then
+    echo -e "${RED}jq_bool_default: missing argument(s)${NC}"
+    exit 1
+  fi
+  
+  jq -r "if $query == null then $default else $query end" "$data"
+}
+# Utility function for evaluating Checkov policies
 evaluate_checkov() {
     if [ "$checkov_enabled" = "true" ]; then
         echo "Evaluating Checkov policies..."
@@ -46,6 +43,22 @@ evaluate_checkov() {
         checkov --framework bicep -f template.bicep $checkov_flags
     fi
 }
+
+# Extract provisioner configuration
+name_prefix=$(jq -r '.md_metadata.name_prefix' "$params_path")
+scope=$(jq -r '.scope // "group"' "$config_path")
+location=$(jq -r '.location // .region // "eastus"' "$config_path")
+complete=$(jq_bool_default '.complete' true "$config_path")
+
+# resource group scope settings
+resource_group=$(jq -r --arg name_prefix "$name_prefix" '.resource_group // $name_prefix' "$config_path")
+create_resource_group=$(jq_bool_default '.create_resource_group' true "$config_path")
+delete_resource_group=$(jq_bool_default '.delete_resource_group' true "$config_path")
+
+# Extract Checkov configuration
+checkov_enabled=$(jq_bool_default '.checkov.enable' true "$config_path")
+checkov_quiet=$(jq_bool_default '.checkov.quiet' true "$config_path")
+checkov_halt_on_failure=$(jq_bool_default '.checkov.halt_on_failure' false "$config_path")
 
 # Extract auth
 # Try to get azure_service_principal from config.json, then fall back to connections.json
