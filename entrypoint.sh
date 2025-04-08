@@ -90,21 +90,18 @@ az account set --subscription "$azure_subscription_id"
 echo "${GREEN}Authentication successful.${NC}"
 
 az_flags=""
-az_scope=""
 # Set command and flag settings based on scope
 case "$scope" in
-  resource-group)
+  group)
     echo "Targeting resource group $resource_group"
-    az_scope="group"
     az_flags+=" --resource-group $resource_group"
     ;;
-  subscription)
+  sub)
     echo "Targeting subscription $azure_subscription_id"
-    az_scope="sub"
     az_flags+=" --location $location"
     ;;
   *)
-    echo -e "${RED}Error: Unsupported scope '$scope'. Expected 'resource-group' or 'subscription'.${NC}"
+    echo -e "${RED}Error: Unsupported scope '$scope'. Expected 'group' or 'sub'.${NC}"
     exit 1
     ;;
 esac
@@ -114,35 +111,39 @@ if [ "$complete" = "true" ]; then
   az_flags+=" --mode Complete"
 fi
 
+deployment_name="${name_prefix}-${MASSDRIVER_STEP_PATH}"
+
 # Handle deployment actions
 case "$MASSDRIVER_DEPLOYMENT_ACTION" in
 
   plan)
     evaluate_checkov
     echo "Executing plan..."
-    az deployment $az_scope what-if $az_flags --name "$resource_group-$MASSDRIVER_STEP_PATH" --template-file template.bicep --parameters @params.json --parameters @connections.json
+    az deployment $scope what-if $az_flags --name $deployment_name --template-file template.bicep --parameters @params.json --parameters @connections.json
     ;;
 
   provision)
     evaluate_checkov
     echo "Provisioning resources..."
 
-    if [ "$az_scope" = "group" ] && [ "$create_resource_group" = "true" ]; then
-      echo "Creating resource group $resource_group in location $location..."
-      az group create --name "$resource_group" --location "$location"
-      echo "Resource group $resource_group created."
-    else
-      echo "Checking if resource group $resource_group exists..."
-      if az group exists --name "$resource_group" | grep -q "true"; then
-        echo "Resource group exists! Using existing resource group $resource_group"
+    if [ "$scope" = "group" ]; then
+      if [ "$create_resource_group" = "true" ]; then
+        echo "Creating resource group $resource_group in location $location..."
+        az group create --name "$resource_group" --location "$location"
+        echo "Resource group $resource_group created."
       else
-        echo -e "${RED}Error: Resource group $resource_group does not exist. If 'create_resource_group' is false, the resource group must already exist in Azure. To avoid this error, set 'create_resource_group' to 'true' in the provisioner configuration, or create the resource group $resource_group before provisioning.${NC}"
-        exit 1
+        echo "Checking if resource group $resource_group exists..."
+        if az group exists --name "$resource_group" | grep -q "true"; then
+          echo "Resource group exists! Using existing resource group $resource_group"
+        else
+          echo -e "${RED}Error: Resource group $resource_group does not exist. If 'create_resource_group' is false, the resource group must already exist in Azure. To avoid this error, set 'create_resource_group' to 'true' in the provisioner configuration, or create the resource group $resource_group before provisioning.${NC}"
+          exit 1
+        fi
       fi
     fi
 
     echo "Deploying bundle"
-    az deployment $az_scope create $az_flags --name "$resource_group-$MASSDRIVER_STEP_PATH" --template-file template.bicep --parameters @params.json --parameters @connections.json | tee outputs.json
+    az deployment $scope create $az_flags --name $deployment_name --template-file template.bicep --parameters @params.json --parameters @connections.json | tee outputs.json
 
     jq -s '{params:.[0],connections:.[1],envs:.[2],secrets:.[3],outputs:.[4].properties.outputs}' "$params_path" "$connections_path" "$envs_path" "$secrets_path" outputs.json > artifact_inputs.json
     for artifact_file in artifact_*.jq; do
@@ -156,13 +157,13 @@ case "$MASSDRIVER_DEPLOYMENT_ACTION" in
   decommission)
     echo "Decommissioning resources..."
     touch empty.bicep
-    az deployment $az_scope create $az_flags --name "$resource_group-$MASSDRIVER_STEP_PATH" --template-file empty.bicep
+    az deployment $scope create $az_flags --name $deployment_name --template-file empty.bicep
     rm empty.bicep
 
-    echo "Deleting deployment group $resource_group-$MASSDRIVER_STEP_PATH"
-    az deployment $az_scope delete --name "$resource_group-$MASSDRIVER_STEP_PATH"
+    echo "Deleting deployment group $deployment_name"
+    az deployment $scope delete --name "$deployment_name"
 
-    if [ "$az_scope" = "group" ] && [ "$delete_resource_group" = "true" ]; then
+    if [ "$scope" = "group" ] && [ "$delete_resource_group" = "true" ]; then
       echo "Deleting resource group $resource_group in location $location"
       az group delete --name "$resource_group" --yes
     fi
