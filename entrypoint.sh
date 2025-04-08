@@ -14,11 +14,15 @@ config_path="$entrypoint_dir/config.json"
 envs_path="$entrypoint_dir/envs.json"
 secrets_path="$entrypoint_dir/secrets.json"
 
-# Extract provisioner configuration
 name_prefix=$(jq -r '.md_metadata.name_prefix' "$params_path")
-region=$(jq -r '.region // "eastus"' "$config_path")
-resource_group=$(jq -r --arg name_prefix "$name_prefix" '.resource_group // $name_prefix' "$config_path")
+
+# Extract provisioner configuration
+scope=$(jq -r '.scope // "group"' "$config_path")
+location=$(jq -r '.location // .region // "eastus"' "$config_path")
 complete=$(jq -r '.complete // true' "$config_path")
+
+# resource group scope settings
+resource_group=$(jq -r --arg name_prefix "$name_prefix" '.resource_group // $name_prefix' "$config_path")
 create_resource_group=$(jq -r '.create_resource_group // true' "$config_path")
 delete_resource_group=$(jq -r '.delete_resource_group // true' "$config_path")
 
@@ -85,10 +89,29 @@ fi
 az account set --subscription "$azure_subscription_id"
 echo "${GREEN}Authentication successful.${NC}"
 
+az_flags=""
+az_scope=""
+# Set command and flag settings based on scope
+case "$scope" in
+  resource-group)
+    echo "Targeting resource group $resource_group"
+    az_scope="group"
+    az_flags+=" --resource-group $resource_group"
+    ;;
+  subscription)
+    echo "Targeting subscription $azure_subscription_id"
+    az_scope="sub"
+    az_flags+=" --location $location"
+    ;;
+  *)
+    echo -e "${RED}Error: Unsupported scope '$scope'. Expected 'resource-group' or 'subscription'.${NC}"
+    exit 1
+    ;;
+esac
+
 # Extract flags from provisioner config
-flags=""
 if [ "$complete" = "true" ]; then
-  flags="--mode Complete"
+  az_flags+=" --mode Complete"
 fi
 
 # Handle deployment actions
@@ -97,16 +120,16 @@ case "$MASSDRIVER_DEPLOYMENT_ACTION" in
   plan)
     evaluate_checkov
     echo "Executing plan..."
-    az deployment group what-if $flags --name "$resource_group-$MASSDRIVER_STEP_PATH" --resource-group "$resource_group" --template-file template.bicep --parameters @params.json --parameters @connections.json
+    az deployment $az_scope what-if $az_flags --name "$resource_group-$MASSDRIVER_STEP_PATH" --template-file template.bicep --parameters @params.json --parameters @connections.json
     ;;
 
   provision)
     evaluate_checkov
     echo "Provisioning resources..."
 
-    if [ "$create_resource_group" = "true" ]; then
-      echo "Creating resource group $resource_group in region $region..."
-      az group create --name "$resource_group" --location "$region"
+    if [ "$az_scope" = "group" ] && [ "$create_resource_group" = "true" ]; then
+      echo "Creating resource group $resource_group in location $location..."
+      az group create --name "$resource_group" --location "$location"
       echo "Resource group $resource_group created."
     else
       echo "Checking if resource group $resource_group exists..."
@@ -119,7 +142,7 @@ case "$MASSDRIVER_DEPLOYMENT_ACTION" in
     fi
 
     echo "Deploying bundle"
-    az deployment group create $flags --name "$resource_group-$MASSDRIVER_STEP_PATH" --resource-group "$resource_group" --template-file template.bicep --parameters @params.json --parameters @connections.json | tee outputs.json
+    az deployment $az_scope create $az_flags --name "$resource_group-$MASSDRIVER_STEP_PATH" --template-file template.bicep --parameters @params.json --parameters @connections.json | tee outputs.json
 
     jq -s '{params:.[0],connections:.[1],envs:.[2],secrets:.[3],outputs:.[4].properties.outputs}' "$params_path" "$connections_path" "$envs_path" "$secrets_path" outputs.json > artifact_inputs.json
     for artifact_file in artifact_*.jq; do
@@ -133,14 +156,14 @@ case "$MASSDRIVER_DEPLOYMENT_ACTION" in
   decommission)
     echo "Decommissioning resources..."
     touch empty.bicep
-    az deployment group create $flags --name "$resource_group-$MASSDRIVER_STEP_PATH" --resource-group "$resource_group" --template-file empty.bicep
+    az deployment $az_scope create $az_flags --name "$resource_group-$MASSDRIVER_STEP_PATH" --template-file empty.bicep
     rm empty.bicep
 
     echo "Deleting deployment group $resource_group-$MASSDRIVER_STEP_PATH"
-    az deployment group delete --name "$resource_group-$MASSDRIVER_STEP_PATH" --resource-group "$resource_group"
+    az deployment $az_scope delete --name "$resource_group-$MASSDRIVER_STEP_PATH"
 
-    if [ "$delete_resource_group" = "true" ]; then
-      echo "Deleting resource group $resource_group in region $region"
+    if [ "$az_scope" = "group" ] && [ "$delete_resource_group" = "true" ]; then
+      echo "Deleting resource group $resource_group in location $location"
       az group delete --name "$resource_group" --yes
     fi
 
