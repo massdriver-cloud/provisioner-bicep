@@ -22,7 +22,7 @@ The following configuration options are available:
 | `azure_service_principal` | object | `.connections.azure_service_principal` | `jq` path to a `massdriver/azure-service-principal` connection for authentication to Azure |
 | `location` | string | `"eastus"` | Azure region to deploy template resources into. Defaults to `"eastus"`. |
 | `scope` | string | `"group"` | Sets the [Azure Resource Manager deployment scope](https://learn.microsoft.com/en-us/azure/azure-resource-manager/templates/deploy-cli#deployment-scope). Currently supports `group` and `sub`. For more information, refer to the [Deployment Scope](#deployment-scope) section. |
-| `complete` | boolean | `true` | Sets the [Azure Resource Manager deployment mode](https://learn.microsoft.com/en-us/azure/azure-resource-manager/templates/deployment-modes) to "Complete" (sets the `--mode Complete` flag). If this is set to `false`, deployment mode will be "Incremental". For more information, refer to the [Deployment Mode](#deployment-mode) section. |
+| `complete` | boolean | `true` | Sets the [Azure Resource Manager deployment mode](https://learn.microsoft.com/en-us/azure/azure-resource-manager/templates/deployment-modes) to "Complete" (sets the `--mode Complete` flag). If this is set to `false`, deployment mode will be "Incremental". Only applies to steps with scope `group`. For more information, refer to the [Deployment Mode](#deployment-mode) section. |
 | `resource_group` | string | (package name) | Specifies the resource group name. Defaults to the Massdriver package name if not specified. Only applies to steps with scope `group`. |
 | `create_resource_group` | boolean | `true` | Determines whether the resource group will be created during provisioning. If this is set to `false`, the resource group must already exist in Azure. Only applies to steps with scope `group`. |
 | `delete_resource_group` | boolean | `true` | Determines whether the resource group will be deleted during decommissioning. Only applies to steps with scope `group`. |
@@ -36,7 +36,7 @@ The following configuration options are available:
 
 ### Deployment Mode
 
-[Azure Resource Manager supports 2 deployment modes](https://learn.microsoft.com/en-us/azure/azure-resource-manager/templates/deployment-modes): Incremental and Complete. It is important to understand the benefits and drawbacks to each approach and how they impact bundle design and deployment.
+[Azure Resource Manager supports 2 deployment modes](https://learn.microsoft.com/en-us/azure/azure-resource-manager/templates/deployment-modes) for the resource group deployment scope: Incremental and Complete. It is important to understand the benefits and drawbacks to each approach and how they impact bundle design and deployment.
 
 #### Complete
 
