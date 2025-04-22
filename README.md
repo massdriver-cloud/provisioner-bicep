@@ -36,7 +36,7 @@ The following configuration options are available:
 
 ### Deployment Mode
 
-[Azure Resource Manager supports 2 deployment modes](https://learn.microsoft.com/en-us/azure/azure-resource-manager/templates/deployment-modes) for resource group deployment scopes: Incremental and Complete. It is important to understand the benefits and drawbacks to each approach and how they impact bundle design and deployment.
+[Azure Resource Manager supports 2 deployment modes](https://learn.microsoft.com/en-us/azure/azure-resource-manager/templates/deployment-modes) for the resource group deployment scope: Incremental and Complete. It is important to understand the benefits and drawbacks to each approach and how they impact bundle design and deployment.
 
 #### Complete
 
