@@ -3,6 +3,7 @@ set -euo pipefail
 
 # Define colors
 RED='\033[0;31m'
+YELLOW='\033[0;33m'
 GREEN='\033[0;32m'
 NC='\033[0m' # No Color (reset)
 
@@ -96,22 +97,29 @@ jq 'with_entries(.value |= {value: .})' "$params_path" > params.json
 # Authenticate with Azure using the service principal
 echo "Authorizing to Azure using service principal..."
 if ! az login --service-principal -u "$azure_client_id" -p "$azure_client_secret" -t "$azure_tenant_id"; then
-  echo "Authentication failed. Please check the Azure credentials and refer to provisioner documentation."
+  echo -e "${RED}Authentication failed. Please check the Azure credentials and refer to provisioner documentation.${NC}"
   exit 1
 fi
 az account set --subscription "$azure_subscription_id"
-echo "${GREEN}Authentication successful.${NC}"
+echo -e "${GREEN}Authentication successful.${NC}\n"
 
 az_flags=""
 # Set command and flag settings based on scope
 case "$scope" in
   group)
-    echo "Targeting resource group $resource_group"
+    echo "Targeting resource group $resource_group\n"
     az_flags+=" --resource-group $resource_group"
+
+    if [ "$complete" = "true" ] && [ "$MASSDRIVER_DEPLOYMENT_ACTION" != "decommission" ]; then
+      az_flags+=" --mode Complete"
+    fi
     ;;
   sub)
-    echo "Targeting subscription $azure_subscription_id"
-    az_flags+=" --location $location"
+    echo "Targeting subscription $azure_subscription_id\n"
+    if [ "$MASSDRIVER_DEPLOYMENT_ACTION" != "decommission" ]; then
+      az_flags+=" --location $location"
+    fi
+    
     ;;
   *)
     echo -e "${RED}Error: Unsupported scope '$scope'. Expected 'group' or 'sub'.${NC}"
@@ -119,10 +127,7 @@ case "$scope" in
     ;;
 esac
 
-# Extract flags from provisioner config
-if [ "$complete" = "true" ]; then
-  az_flags+=" --mode Complete"
-fi
+
 
 deployment_name="${name_prefix}-${MASSDRIVER_STEP_PATH}"
 
@@ -132,7 +137,7 @@ case "$MASSDRIVER_DEPLOYMENT_ACTION" in
   plan)
     evaluate_checkov
     echo "Executing plan..."
-    az deployment $scope what-if $az_flags --name $deployment_name --template-file template.bicep --parameters @params.json --parameters @connections.json
+    az deployment $scope what-if $az_flags --name "$deployment_name" --template-file template.bicep --parameters @params.json --parameters @connections.json
     ;;
 
   provision)
@@ -156,7 +161,7 @@ case "$MASSDRIVER_DEPLOYMENT_ACTION" in
     fi
 
     echo "Deploying bundle"
-    az deployment $scope create $az_flags --name $deployment_name --template-file template.bicep --parameters @params.json --parameters @connections.json | tee outputs.json
+    az deployment $scope create $az_flags --name "$deployment_name" --template-file template.bicep --parameters @params.json --parameters @connections.json | tee outputs.json
 
     jq -s '{params:.[0],connections:.[1],envs:.[2],secrets:.[3],outputs:.[4].properties.outputs}' "$params_path" "$connections_path" "$envs_path" "$secrets_path" outputs.json > artifact_inputs.json
     for artifact_file in artifact_*.jq; do
@@ -168,13 +173,17 @@ case "$MASSDRIVER_DEPLOYMENT_ACTION" in
     ;;
 
   decommission)
-    echo "Decommissioning resources..."
-    touch empty.bicep
-    az deployment $scope create $az_flags --name $deployment_name --template-file empty.bicep
-    rm empty.bicep
+    if [ "$scope" = "group" ] && [ "$complete" = "true" ]; then
+      echo "Decommissioning resources..."
+      touch empty.bicep
+      az deployment $scope create $az_flags --mode Complete --name "$deployment_name" --template-file empty.bicep
+      rm empty.bicep
+    else
+        echo -e "${YELLOW}Your bundle configuration prevents resource deletion during decommission. Be sure to delete bundle resources manually.${NC}\n"
+    fi
 
     echo "Deleting deployment group $deployment_name"
-    az deployment $scope delete --name "$deployment_name"
+    az deployment $scope delete $az_flags --name "$deployment_name"
 
     if [ "$scope" = "group" ] && [ "$delete_resource_group" = "true" ]; then
       echo "Deleting resource group $resource_group in location $location"
