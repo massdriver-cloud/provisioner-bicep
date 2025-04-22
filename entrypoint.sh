@@ -179,7 +179,7 @@ case "$MASSDRIVER_DEPLOYMENT_ACTION" in
       az deployment $scope create $az_flags --mode Complete --name "$deployment_name" --template-file empty.bicep
       rm empty.bicep
     else
-        echo -e "${YELLOW}Your bundle configuration prevents resource deletion during decommission. Be sure to delete bundle resources manually.${NC}\n"
+        echo -e "${YELLOW}Warning: Your bundle configuration prevents resource deletion during decommission. Be sure to delete bundle resources manually.${NC}\n"
     fi
 
     echo "Deleting deployment group $deployment_name"
