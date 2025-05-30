@@ -164,11 +164,10 @@ case "$MASSDRIVER_DEPLOYMENT_ACTION" in
       fi
     fi
 
-    echo "Deploying stack $stack_name..."
-    az stack $scope create $create_flags $flags --name "$stack_name" --template-file template.bicep --parameters @params.json --parameters @connections.json | jq '.outputs // {} | with_entries(.value = .value.value)' | tee outputs.json
+    echo -e "Deploying stack $stack_name..."
+    az stack $scope create $create_flags $flags --name "$stack_name" --template-file template.bicep --parameters @params.json --parameters @connections.json | jq '.outputs // {} | with_entries(.value = .value.value)' > outputs.json
     echo -e "${GREEN}Stack $stack_name deployed successfully.\n${NC}"
     
-    #az stack $scope show $show_flags --name "$stack_name" --output json | jq '.outputs // {} | with_entries(.value = .value.value)' > outputs.json
     jq -s '{params:.[0],connections:.[1],envs:.[2],secrets:.[3],outputs:.[4]}' "$params_path" "$connections_path" "$envs_path" "$secrets_path" outputs.json > artifact_inputs.json
     for artifact_file in artifact_*.jq; do
       [ -f "$artifact_file" ] || break
