@@ -185,7 +185,7 @@ case "$MASSDRIVER_DEPLOYMENT_ACTION" in
     echo -e "${GREEN}Stack $stack_name deleted successfully.\n${NC}"
 
     if [ "$scope" = "group" ] && [ "$delete_resource_group" = "true" ]; then
-      echo "Deleting resource group $resource_group in location $location"
+      echo "Deleting resource group $resource_group..."
       az group delete --name "$resource_group" --yes
       echo -e "${GREEN}Resource group $resource_group deleted successfully.\n${NC}"
     fi
