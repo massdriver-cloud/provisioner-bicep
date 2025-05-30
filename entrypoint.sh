@@ -49,7 +49,8 @@ evaluate_checkov() {
 name_prefix=$(jq -r '.md_metadata.name_prefix' "$params_path")
 scope=$(jq -r '.scope // "group"' "$config_path")
 location=$(jq -r '.location // .region // "eastus"' "$config_path")
-complete=$(jq_bool_default '.complete' true "$config_path")
+action_on_unmanage=$(jq -r '.action_on_unmanage // "deleteAll"' "$config_path")
+deny_settings_mode=$(jq -r '.deny_settings_mode // "none"' "$config_path")
 
 # resource group scope settings
 resource_group=$(jq -r --arg name_prefix "$name_prefix" '.resource_group // $name_prefix' "$config_path")
@@ -103,21 +104,25 @@ fi
 az account set --subscription "$azure_subscription_id"
 echo -e "${GREEN}Authentication successful.${NC}\n"
 
-az_flags=""
-# Set command and flag settings based on scope
+# Set flags for az stack commands
+flags=""
+flags+=" --action-on-unmanage $action_on_unmanage"
+
+create_flags=""
+create_flags+=" --deny-settings-mode $deny_settings_mode"
+
+show_flags=""
 case "$scope" in
   group)
-    echo "Targeting resource group $resource_group\n"
-    az_flags+=" --resource-group $resource_group"
+    echo -e "Targeting resource group $resource_group\n"
+    flags+=" --resource-group $resource_group"
+    show_flags+=" --resource-group $resource_group"
 
-    if [ "$complete" = "true" ] && [ "$MASSDRIVER_DEPLOYMENT_ACTION" != "decommission" ]; then
-      az_flags+=" --mode Complete"
-    fi
     ;;
   sub)
-    echo "Targeting subscription $azure_subscription_id\n"
+    echo -e "Targeting subscription $azure_subscription_id\n"
     if [ "$MASSDRIVER_DEPLOYMENT_ACTION" != "decommission" ]; then
-      az_flags+=" --location $location"
+      create_flags+=" --location $location"
     fi
     
     ;;
@@ -127,17 +132,16 @@ case "$scope" in
     ;;
 esac
 
-
-
-deployment_name="${name_prefix}-${MASSDRIVER_STEP_PATH}"
+stack_name="${name_prefix}-${MASSDRIVER_STEP_PATH}"
 
 # Handle deployment actions
 case "$MASSDRIVER_DEPLOYMENT_ACTION" in
 
   plan)
-    evaluate_checkov
-    echo "Executing plan..."
-    az deployment $scope what-if $az_flags --name "$deployment_name" --template-file template.bicep --parameters @params.json --parameters @connections.json
+    # evaluate_checkov
+    # echo "Executing plan..."
+    # az deployment $scope what-if $create_flags --name "$stack_name" --template-file template.bicep --parameters @params.json --parameters @connections.json
+    echo -e "${YELLOW}What-if is not supported for Azure Stack deployments. Skipping plan step.${NC}"
     ;;
 
   provision)
@@ -148,7 +152,7 @@ case "$MASSDRIVER_DEPLOYMENT_ACTION" in
       if [ "$create_resource_group" = "true" ]; then
         echo "Creating resource group $resource_group in location $location..."
         az group create --name "$resource_group" --location "$location"
-        echo "Resource group $resource_group created."
+        echo -e "${GREEN}Resource group $resource_group created.\n${NC}"
       else
         echo "Checking if resource group $resource_group exists..."
         if az group exists --name "$resource_group" | grep -q "true"; then
@@ -160,9 +164,11 @@ case "$MASSDRIVER_DEPLOYMENT_ACTION" in
       fi
     fi
 
-    echo "Deploying bundle"
-    az deployment $scope create $az_flags --name "$deployment_name" --template-file template.bicep --parameters @params.json --parameters @connections.json | jq '.properties.outputs // {} | with_entries(.value = .value.value)' | tee outputs.json
-
+    echo "Deploying stack $stack_name..."
+    az stack $scope create $create_flags $flags --name "$stack_name" --template-file template.bicep --parameters @params.json --parameters @connections.json | jq '.outputs // {} | with_entries(.value = .value.value)' | tee outputs.json
+    echo -e "${GREEN}Stack $stack_name deployed successfully.\n${NC}"
+    
+    #az stack $scope show $show_flags --name "$stack_name" --output json | jq '.outputs // {} | with_entries(.value = .value.value)' > outputs.json
     jq -s '{params:.[0],connections:.[1],envs:.[2],secrets:.[3],outputs:.[4]}' "$params_path" "$connections_path" "$envs_path" "$secrets_path" outputs.json > artifact_inputs.json
     for artifact_file in artifact_*.jq; do
       [ -f "$artifact_file" ] || break
@@ -173,21 +179,15 @@ case "$MASSDRIVER_DEPLOYMENT_ACTION" in
     ;;
 
   decommission)
-    if [ "$scope" = "group" ] && [ "$complete" = "true" ]; then
-      echo "Decommissioning resources..."
-      touch empty.bicep
-      az deployment $scope create $az_flags --mode Complete --name "$deployment_name" --template-file empty.bicep
-      rm empty.bicep
-    else
-        echo -e "${YELLOW}Warning: Your bundle configuration prevents resource deletion during decommission. Be sure to delete bundle resources manually.${NC}\n"
-    fi
 
-    echo "Deleting deployment group $deployment_name"
-    az deployment $scope delete $az_flags --name "$deployment_name"
+    echo -e "Deleting stack $stack_name..."
+    az stack $scope delete $flags --name "$stack_name" --yes
+    echo -e "${GREEN}Stack $stack_name deleted successfully.\n${NC}"
 
     if [ "$scope" = "group" ] && [ "$delete_resource_group" = "true" ]; then
       echo "Deleting resource group $resource_group in location $location"
       az group delete --name "$resource_group" --yes
+      echo -e "${GREEN}Resource group $resource_group deleted successfully.\n${NC}"
     fi
 
     for artifact_file in artifact_*.jq; do
