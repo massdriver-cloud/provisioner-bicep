@@ -9,7 +9,7 @@ jobs:
 
     strategy:
       matrix:
-        azure_cli_version: [2.68.0]  # Full semver versions
+        azure_cli_version: [2.75.0]  # Full semver versions
 
     steps:
       - name: Checkout repository
