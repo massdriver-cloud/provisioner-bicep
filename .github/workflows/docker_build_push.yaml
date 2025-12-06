@@ -40,5 +40,5 @@ jobs:
           push: true
           build-args: AZURE_CLI_VERSION=${{ matrix.azure_cli_version }}
           tags: |
-            massdrivercloud/provisioner-azure-cli:${{ env.MAJOR_MINOR_VERSION }}
-            ${{ matrix.is_latest && 'massdrivercloud/provisioner-azure-cli:latest' || '' }}
+            massdrivercloud/provisioner-bicep:${{ env.MAJOR_MINOR_VERSION }}
+            ${{ matrix.is_latest && 'massdrivercloud/provisioner-bicep:latest' || '' }}
