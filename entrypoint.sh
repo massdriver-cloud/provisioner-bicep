@@ -190,14 +190,6 @@ case "$MASSDRIVER_DEPLOYMENT_ACTION" in
       echo -e "${GREEN}Resource group $resource_group deleted successfully.\n${NC}"
     fi
 
-    for artifact_file in artifact_*.jq; do
-      [ -f "$artifact_file" ] || break
-      field=$(echo "$artifact_file" | sed 's/^artifact_\(.*\).jq$/\1/')
-      echo "Deleting artifact for field $field"
-      xo artifact delete -d "$field"
-    done
-    ;;
-
   *)
     echo -e "${RED}Error: Unsupported deployment action '$MASSDRIVER_DEPLOYMENT_ACTION'. Expected 'plan', 'provision', or 'decommission'.${NC}"
     exit 1
