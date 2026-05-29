@@ -1,5 +1,8 @@
 #!/bin/bash
 set -euo pipefail
+# Unmatched globs expand to nothing instead of the literal pattern, so the
+# artifact_*.jq / resource_*.jq loops below simply skip when no files match.
+shopt -s nullglob
 
 # Define colors
 RED='\033[0;31m'
@@ -77,10 +80,12 @@ if [ -z "$azure_auth" ]; then
 fi
 
 # Extract fields from azure_service_principal and validate they are not empty
-azure_client_id=$(echo "$azure_auth" | jq -r '.data.client_id // empty')
-azure_client_secret=$(echo "$azure_auth" | jq -r '.data.client_secret // empty')
-azure_tenant_id=$(echo "$azure_auth" | jq -r '.data.tenant_id // empty')
-azure_subscription_id=$(echo "$azure_auth" | jq -r '.data.subscription_id // empty')
+# We expect the azure_service_principal to be a flat object with client_id, client_secret, tenant_id, and subscription_id fields
+# but we also check for the fields being nested under a "data" object (to support legacy formats)
+azure_client_id=$(echo "$azure_auth" | jq -r '.client_id // .data.client_id // empty')
+azure_client_secret=$(echo "$azure_auth" | jq -r '.client_secret // .data.client_secret // empty')
+azure_tenant_id=$(echo "$azure_auth" | jq -r '.tenant_id // .data.tenant_id // empty')
+azure_subscription_id=$(echo "$azure_auth" | jq -r '.subscription_id // .data.subscription_id // empty')
 
 for var in azure_client_id azure_client_secret azure_tenant_id; do
   if [ -z "${!var}" ]; then
@@ -89,7 +94,7 @@ for var in azure_client_id azure_client_secret azure_tenant_id; do
   fi
 done
 
-cd bundle/$MASSDRIVER_STEP_PATH
+cd "bundle/$MASSDRIVER_STEP_PATH"
 
 # Manipulate params/connections to fit Bicep format and write to file
 jq 'with_entries(.value |= {value: .})' "$connections_path" > connections.json
@@ -101,30 +106,29 @@ if ! az login --service-principal -u "$azure_client_id" -p "$azure_client_secret
   echo -e "${RED}Authentication failed. Please check the Azure credentials and refer to provisioner documentation.${NC}"
   exit 1
 fi
-az account set --subscription "$azure_subscription_id"
+
+# If subscription_id is provided, switch to it; otherwise fall back to the service
+# principal's default subscription.
+if [ -n "$azure_subscription_id" ]; then
+  az account set --subscription "$azure_subscription_id"
+fi
 echo -e "${GREEN}Authentication successful.${NC}\n"
 
 # Set flags for az stack commands
-flags=""
-flags+=" --action-on-unmanage $action_on_unmanage"
+flags=(--action-on-unmanage "$action_on_unmanage")
+create_flags=(--deny-settings-mode "$deny_settings_mode")
 
-create_flags=""
-create_flags+=" --deny-settings-mode $deny_settings_mode"
-
-show_flags=""
 case "$scope" in
   group)
     echo -e "Targeting resource group $resource_group\n"
-    flags+=" --resource-group $resource_group"
-    show_flags+=" --resource-group $resource_group"
-
+    flags+=(--resource-group "$resource_group")
     ;;
   sub)
-    echo -e "Targeting subscription $azure_subscription_id\n"
+    echo -e "Targeting subscription $(az account show --query id -o tsv)\n"
     if [ "$MASSDRIVER_DEPLOYMENT_ACTION" != "decommission" ]; then
-      create_flags+=" --location $location"
+      create_flags+=(--location "$location")
     fi
-    
+
     ;;
   *)
     echo -e "${RED}Error: Unsupported scope '$scope'. Expected 'group' or 'sub'.${NC}"
@@ -155,7 +159,7 @@ case "$MASSDRIVER_DEPLOYMENT_ACTION" in
         echo -e "${GREEN}Resource group $resource_group created.\n${NC}"
       else
         echo "Checking if resource group $resource_group exists..."
-        if az group exists --name "$resource_group" | grep -q "true"; then
+        if [ "$(az group exists --name "$resource_group")" = "true" ]; then
           echo "Resource group exists! Using existing resource group $resource_group"
         else
           echo -e "${RED}Error: Resource group $resource_group does not exist. If 'create_resource_group' is false, the resource group must already exist in Azure. To avoid this error, set 'create_resource_group' to 'true' in the provisioner configuration, or create the resource group $resource_group before provisioning.${NC}"
@@ -165,23 +169,27 @@ case "$MASSDRIVER_DEPLOYMENT_ACTION" in
     fi
 
     echo -e "Deploying stack $stack_name..."
-    create_output=$(az stack $scope create $create_flags $flags --name "$stack_name" --template-file template.bicep --parameters @params.json --parameters @connections.json)
-    echo "$create_output" | jq '.outputs // {} | with_entries(.value = .value.value)' | tee outputs.json
+    if ! az stack "$scope" create "${create_flags[@]}" "${flags[@]}" --name "$stack_name" --template-file template.bicep --parameters @params.json --parameters @connections.json > create_output.json; then
+      echo -e "${RED}Stack $stack_name deployment failed.${NC}"
+      cat create_output.json
+      exit 1
+    fi
+    jq '.outputs // {} | with_entries(.value = .value.value)' create_output.json | tee outputs.json
     echo -e "${GREEN}Stack $stack_name deployed successfully.\n${NC}"
 
-    jq -s '{params:.[0],connections:.[1],envs:.[2],secrets:.[3],outputs:.[4]}' "$params_path" "$connections_path" "$envs_path" "$secrets_path" outputs.json > artifact_inputs.json
-    for artifact_file in artifact_*.jq; do
-      [ -f "$artifact_file" ] || break
-      field=$(echo "$artifact_file" | sed 's/^artifact_\(.*\).jq$/\1/')
-      echo "Creating artifact for field $field"
-      jq -f "$artifact_file" artifact_inputs.json | xo artifact publish -d "$field" -n "Artifact $field for $name_prefix" -f -
+    jq -s '{params:.[0],connections:.[1],envs:.[2],secrets:.[3],outputs:.[4]}' "$params_path" "$connections_path" "$envs_path" "$secrets_path" outputs.json > resource_inputs.json
+    for resource_file in artifact_*.jq resource_*.jq; do
+      [ -f "$resource_file" ] || continue
+      field=$(echo "$resource_file" | sed -E 's/^(artifact|resource)_(.*)\.jq$/\2/')
+      echo "Creating resource field $field"
+      jq -f "$resource_file" resource_inputs.json | xo resource publish -d "$field" -n "Resource $field for $name_prefix" -f -
     done
     ;;
 
   decommission)
 
     echo -e "Deleting stack $stack_name..."
-    az stack $scope delete $flags --name "$stack_name" --yes
+    az stack "$scope" delete "${flags[@]}" --name "$stack_name" --yes
     echo -e "${GREEN}Stack $stack_name deleted successfully.\n${NC}"
 
     if [ "$scope" = "group" ] && [ "$delete_resource_group" = "true" ]; then
@@ -190,11 +198,11 @@ case "$MASSDRIVER_DEPLOYMENT_ACTION" in
       echo -e "${GREEN}Resource group $resource_group deleted successfully.\n${NC}"
     fi
 
-    for artifact_file in artifact_*.jq; do
-      [ -f "$artifact_file" ] || break
-      field=$(echo "$artifact_file" | sed 's/^artifact_\(.*\).jq$/\1/')
-      echo "Deleting artifact for field $field"
-      xo artifact delete -d "$field"
+    for resource_file in artifact_*.jq resource_*.jq; do
+      [ -f "$resource_file" ] || continue
+      field=$(echo "$resource_file" | sed -E 's/^(artifact|resource)_(.*)\.jq$/\2/')
+      echo "Deleting resource field $field"
+      xo resource delete -d "$field" || echo -e "${YELLOW}Warning: failed to delete resource for field $field. Continuing decommission.${NC}"
     done
     ;;
 

@@ -12,7 +12,7 @@ jobs:
       max-parallel: 1
       matrix:
         include: # Full semver versions
-          - azure_cli_version: 2.81.0
+          - azure_cli_version: 2.86.0
             is_latest: true
 
     steps:
