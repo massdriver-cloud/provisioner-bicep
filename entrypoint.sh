@@ -94,6 +94,11 @@ for var in azure_client_id azure_client_secret azure_tenant_id; do
   fi
 done
 
+# TODO: this can eventually be removed after MASSDRIVER_PACKAGE_NAME is fully deprecated
+if [ -z "${MASSDRIVER_INSTANCE_ID:-}" ]; then
+    export MASSDRIVER_INSTANCE_ID=$(echo "$MASSDRIVER_PACKAGE_NAME" | sed 's/-[a-z0-9]\{4\}$//')
+fi
+
 cd "bundle/$MASSDRIVER_STEP_PATH"
 
 # Manipulate params/connections to fit Bicep format and write to file
@@ -175,13 +180,13 @@ case "$MASSDRIVER_DEPLOYMENT_ACTION" in
       exit 1
     fi
     jq '.outputs // {} | with_entries(.value = .value.value)' create_output.json | tee outputs.json
-    echo -e "${GREEN}Stack $stack_name deployed successfully.\n${NC}"
+    echo -e "${GREEN}Stack $stack_name deployed successfully.${NC}"
 
     jq -s '{params:.[0],connections:.[1],envs:.[2],secrets:.[3],outputs:.[4]}' "$params_path" "$connections_path" "$envs_path" "$secrets_path" outputs.json > resource_inputs.json
     for resource_file in artifact_*.jq resource_*.jq; do
       [ -f "$resource_file" ] || continue
       field=$(echo "$resource_file" | sed -E 's/^(artifact|resource)_(.*)\.jq$/\2/')
-      echo "Creating resource field $field"
+      echo -e "\nCreating resource \"$MASSDRIVER_INSTANCE_ID-$field\" in Massdriver..."
       jq -f "$resource_file" resource_inputs.json | xo resource publish -d "$field" -n "Resource $field for $name_prefix" -f -
     done
     ;;
@@ -201,7 +206,7 @@ case "$MASSDRIVER_DEPLOYMENT_ACTION" in
     for resource_file in artifact_*.jq resource_*.jq; do
       [ -f "$resource_file" ] || continue
       field=$(echo "$resource_file" | sed -E 's/^(artifact|resource)_(.*)\.jq$/\2/')
-      echo "Deleting resource field $field"
+      echo -e "\nDeleting resource \"$MASSDRIVER_INSTANCE_ID-$field\" from Massdriver..."
       xo resource delete -d "$field" || echo -e "${YELLOW}Warning: failed to delete resource for field $field. Continuing decommission.${NC}"
     done
     ;;
