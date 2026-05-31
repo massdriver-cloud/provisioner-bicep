@@ -1,5 +1,8 @@
 #!/bin/bash
 set -euo pipefail
+# Unmatched globs expand to nothing instead of the literal pattern, so the
+# artifact_*.jq / resource_*.jq loops below simply skip when no files match.
+shopt -s nullglob
 
 # Define colors
 RED='\033[0;31m'
@@ -49,6 +52,7 @@ evaluate_checkov() {
 name_prefix=$(jq -r '.md_metadata.name_prefix' "$params_path")
 scope=$(jq -r '.scope // "group"' "$config_path")
 location=$(jq -r '.location // .region // "eastus"' "$config_path")
+show_output=$(jq_bool_default '.show_output' false "$config_path")
 action_on_unmanage=$(jq -r '.action_on_unmanage // "deleteAll"' "$config_path")
 deny_settings_mode=$(jq -r '.deny_settings_mode // "none"' "$config_path")
 
@@ -62,69 +66,120 @@ checkov_enabled=$(jq_bool_default '.checkov.enable' true "$config_path")
 checkov_quiet=$(jq_bool_default '.checkov.quiet' true "$config_path")
 checkov_halt_on_failure=$(jq_bool_default '.checkov.halt_on_failure' false "$config_path")
 
-# Extract auth
-# Try to get azure_service_principal from config.json, then fall back to connections.json
-azure_auth=$(jq -r '.azure_service_principal // empty' "$config_path" 2>/dev/null || true)
+# ---------------------------------------------------------------------------
+# Azure authentication
+#
+# Field resolution (config overlays the connection per-field; whichever single
+# connection is found is used, and config alone is fine if neither exists):
+#   1. config.json      .azure_authentication            (manual overlay, flat)
+#   2. connections.json .azure_authentication            (connection, flat)    } first
+#   3. connections.json .azure_service_principal.data    (legacy conn, .data)  } found
+#
+# Auth-method detection then runs on the resolved fields:
+#   1. secret present      -> static SP
+#   2. federated token env -> workload identity
+#   3. client_id           -> user-assigned MI
+#   4. else                -> system-assigned MI
+# subscription_id is independent of the method.
+# ---------------------------------------------------------------------------
 
-if [ -z "$azure_auth" ]; then
-  azure_auth=$(jq -r '.azure_service_principal // empty' "$connections_path" 2>/dev/null || true)
-fi
+# Overlay config.azure_authentication on top of whichever connection is found.
+auth=$(jq -s '
+    (.[1].azure_authentication // .[1].azure_service_principal.data // {}) as $conn
+  | (.[0].azure_authentication // {})                                   as $cfg
+  | $conn * $cfg
+' "$config_path" "$connections_path")
 
-# Check if azure_auth is still empty, and exit since we don't have auth info
-if [ -z "$azure_auth" ]; then
-  echo -e "${RED}Error: No Azure credentials found. Please refer to the provisioner documentation for specifying Azure credentials.${NC}"
+azure_client_id=$(echo "$auth"       | jq -r '.client_id // empty')
+azure_client_secret=$(echo "$auth"   | jq -r '.client_secret // empty')
+azure_tenant_id=$(echo "$auth"       | jq -r '.tenant_id // empty')
+azure_subscription_id=$(echo "$auth" | jq -r '.subscription_id // empty')
+
+# The workload-identity webhook injects these; let resolved config/connection win.
+azure_client_id="${azure_client_id:-${AZURE_CLIENT_ID:-}}"
+azure_tenant_id="${azure_tenant_id:-${AZURE_TENANT_ID:-}}"
+federated_token_file="${AZURE_FEDERATED_TOKEN_FILE:-}"
+
+auth_fail() {  # $1 = method, $2 = hint
+  echo -e "${RED}Azure authentication failed (${1}).${NC}" >&2
+  echo -e "${RED}${2}${NC}" >&2
   exit 1
+}
+
+if [ -n "$azure_client_secret" ]; then
+  echo "Authenticating to Azure with a service principal secret (client_id: ${azure_client_id:-<unset>})..."
+  missing=()
+  [ -z "$azure_client_id" ] && missing+=("client_id")
+  [ -z "$azure_tenant_id" ] && missing+=("tenant_id")
+  [ ${#missing[@]} -gt 0 ] && auth_fail "service principal secret" \
+    "client_secret was provided but these required fields are missing: ${missing[*]}."
+  az login --service-principal -u "$azure_client_id" -p "$azure_client_secret" -t "$azure_tenant_id" >/dev/null \
+    || auth_fail "service principal secret" \
+       "Verify client_id, client_secret, and tenant_id are correct and the secret has not expired."
+
+elif [ -n "$federated_token_file" ]; then
+  echo "Authenticating to Azure with workload identity (federated token)..."
+  missing=()
+  [ -z "$azure_client_id" ] && missing+=("client_id / AZURE_CLIENT_ID")
+  [ -z "$azure_tenant_id" ] && missing+=("tenant_id / AZURE_TENANT_ID")
+  [ ${#missing[@]} -gt 0 ] && auth_fail "workload identity" \
+    "AZURE_FEDERATED_TOKEN_FILE is set but these are missing: ${missing[*]}. Is the webhook injecting them / the service account annotated?"
+  [ -r "$federated_token_file" ] || auth_fail "workload identity" \
+    "Federated token file '$federated_token_file' is not readable."
+  az login --service-principal -u "$azure_client_id" -t "$azure_tenant_id" \
+    --federated-token "$(cat "$federated_token_file")" >/dev/null \
+    || auth_fail "workload identity" \
+       "The federated credential may not be configured on the app/identity for this cluster's OIDC issuer + service account."
+
+elif [ -n "$azure_client_id" ]; then
+  echo "Authenticating to Azure with a user-assigned managed identity (client_id: ${azure_client_id})..."
+  az login --identity --username "$azure_client_id" >/dev/null \
+    || auth_fail "user-assigned managed identity" \
+       "Is this identity assigned to the node, and is IMDS reachable from the pod?"
+
+else
+  echo "Authenticating to Azure with a system-assigned managed identity..."
+  echo -e "${YELLOW}Note: system-assigned managed identity is generally unavailable to Kubernetes pods. If this is an AKS pod, you almost certainly want workload identity instead.${NC}"
+  az login --identity >/dev/null \
+    || auth_fail "system-assigned managed identity" \
+       "No client_secret, no federated token, and no usable managed identity. For an AKS pod, configure workload identity."
 fi
 
-# Extract fields from azure_service_principal and validate they are not empty
-azure_client_id=$(echo "$azure_auth" | jq -r '.data.client_id // empty')
-azure_client_secret=$(echo "$azure_auth" | jq -r '.data.client_secret // empty')
-azure_tenant_id=$(echo "$azure_auth" | jq -r '.data.tenant_id // empty')
-azure_subscription_id=$(echo "$azure_auth" | jq -r '.data.subscription_id // empty')
+echo -e "${GREEN}Authenticated to Azure.${NC}\n"
 
-for var in azure_client_id azure_client_secret azure_tenant_id; do
-  if [ -z "${!var}" ]; then
-    echo -e "${RED}Error: Missing required field $var in azure_service_principal.${NC}"
-    exit 1
-  fi
-done
+# subscription_id: use if provided, otherwise the identity's default subscription.
+if [ -n "$azure_subscription_id" ]; then
+  az account set --subscription "$azure_subscription_id" \
+    || auth_fail "subscription selection" \
+       "Could not switch to subscription '$azure_subscription_id'. Does this identity have access to it?"
+fi
 
-cd bundle/$MASSDRIVER_STEP_PATH
+# TODO: this can eventually be removed after MASSDRIVER_PACKAGE_NAME is fully deprecated
+if [ -z "${MASSDRIVER_INSTANCE_ID:-}" ]; then
+    export MASSDRIVER_INSTANCE_ID=$(echo "$MASSDRIVER_PACKAGE_NAME" | sed 's/-[a-z0-9]\{4\}$//')
+fi
+
+cd "bundle/$MASSDRIVER_STEP_PATH"
 
 # Manipulate params/connections to fit Bicep format and write to file
 jq 'with_entries(.value |= {value: .})' "$connections_path" > connections.json
 jq 'with_entries(.value |= {value: .})' "$params_path" > params.json
 
-# Authenticate with Azure using the service principal
-echo "Authorizing to Azure using service principal..."
-if ! az login --service-principal -u "$azure_client_id" -p "$azure_client_secret" -t "$azure_tenant_id"; then
-  echo -e "${RED}Authentication failed. Please check the Azure credentials and refer to provisioner documentation.${NC}"
-  exit 1
-fi
-az account set --subscription "$azure_subscription_id"
-echo -e "${GREEN}Authentication successful.${NC}\n"
-
 # Set flags for az stack commands
-flags=""
-flags+=" --action-on-unmanage $action_on_unmanage"
+flags=(--action-on-unmanage "$action_on_unmanage")
+create_flags=(--deny-settings-mode "$deny_settings_mode")
 
-create_flags=""
-create_flags+=" --deny-settings-mode $deny_settings_mode"
-
-show_flags=""
 case "$scope" in
   group)
     echo -e "Targeting resource group $resource_group\n"
-    flags+=" --resource-group $resource_group"
-    show_flags+=" --resource-group $resource_group"
-
+    flags+=(--resource-group "$resource_group")
     ;;
   sub)
-    echo -e "Targeting subscription $azure_subscription_id\n"
+    echo -e "Targeting subscription $(az account show --query id -o tsv)\n"
     if [ "$MASSDRIVER_DEPLOYMENT_ACTION" != "decommission" ]; then
-      create_flags+=" --location $location"
+      create_flags+=(--location "$location")
     fi
-    
+
     ;;
   *)
     echo -e "${RED}Error: Unsupported scope '$scope'. Expected 'group' or 'sub'.${NC}"
@@ -155,7 +210,7 @@ case "$MASSDRIVER_DEPLOYMENT_ACTION" in
         echo -e "${GREEN}Resource group $resource_group created.\n${NC}"
       else
         echo "Checking if resource group $resource_group exists..."
-        if az group exists --name "$resource_group" | grep -q "true"; then
+        if [ "$(az group exists --name "$resource_group")" = "true" ]; then
           echo "Resource group exists! Using existing resource group $resource_group"
         else
           echo -e "${RED}Error: Resource group $resource_group does not exist. If 'create_resource_group' is false, the resource group must already exist in Azure. To avoid this error, set 'create_resource_group' to 'true' in the provisioner configuration, or create the resource group $resource_group before provisioning.${NC}"
@@ -165,23 +220,30 @@ case "$MASSDRIVER_DEPLOYMENT_ACTION" in
     fi
 
     echo -e "Deploying stack $stack_name..."
-    create_output=$(az stack $scope create $create_flags $flags --name "$stack_name" --template-file template.bicep --parameters @params.json --parameters @connections.json)
-    echo "$create_output" | jq '.outputs // {} | with_entries(.value = .value.value)' | tee outputs.json
-    echo -e "${GREEN}Stack $stack_name deployed successfully.\n${NC}"
+    if ! az stack "$scope" create "${create_flags[@]}" "${flags[@]}" --name "$stack_name" --template-file template.bicep --parameters @params.json --parameters @connections.json > create_output.json; then
+      [ "$show_output" = "true" ] && cat create_output.json
+      echo -e "${RED}Stack $stack_name deployment failed.${NC}"
+      exit 1
+    fi
+    # The create output contains the deployment outputs nested within it, and may
+    # contain secrets, so it is printed only when show_output is enabled.
+    [ "$show_output" = "true" ] && cat create_output.json
+    jq '.outputs // {} | with_entries(.value = .value.value)' create_output.json > outputs.json
+    echo -e "${GREEN}Stack $stack_name deployed successfully.${NC}"
 
-    jq -s '{params:.[0],connections:.[1],envs:.[2],secrets:.[3],outputs:.[4]}' "$params_path" "$connections_path" "$envs_path" "$secrets_path" outputs.json > artifact_inputs.json
-    for artifact_file in artifact_*.jq; do
-      [ -f "$artifact_file" ] || break
-      field=$(echo "$artifact_file" | sed 's/^artifact_\(.*\).jq$/\1/')
-      echo "Creating artifact for field $field"
-      jq -f "$artifact_file" artifact_inputs.json | xo artifact publish -d "$field" -n "Artifact $field for $name_prefix" -f -
+    jq -s '{params:.[0],connections:.[1],envs:.[2],secrets:.[3],outputs:.[4]}' "$params_path" "$connections_path" "$envs_path" "$secrets_path" outputs.json > resource_inputs.json
+    for resource_file in artifact_*.jq resource_*.jq; do
+      [ -f "$resource_file" ] || continue
+      field=$(echo "$resource_file" | sed -E 's/^(artifact|resource)_(.*)\.jq$/\2/')
+      echo -e "\nCreating resource \"$MASSDRIVER_INSTANCE_ID-$field\" in Massdriver..."
+      jq -f "$resource_file" resource_inputs.json | xo resource publish -d "$field" -n "Resource $field for $name_prefix" -f -
     done
     ;;
 
   decommission)
 
     echo -e "Deleting stack $stack_name..."
-    az stack $scope delete $flags --name "$stack_name" --yes
+    az stack "$scope" delete "${flags[@]}" --name "$stack_name" --yes
     echo -e "${GREEN}Stack $stack_name deleted successfully.\n${NC}"
 
     if [ "$scope" = "group" ] && [ "$delete_resource_group" = "true" ]; then
@@ -190,11 +252,11 @@ case "$MASSDRIVER_DEPLOYMENT_ACTION" in
       echo -e "${GREEN}Resource group $resource_group deleted successfully.\n${NC}"
     fi
 
-    for artifact_file in artifact_*.jq; do
-      [ -f "$artifact_file" ] || break
-      field=$(echo "$artifact_file" | sed 's/^artifact_\(.*\).jq$/\1/')
-      echo "Deleting artifact for field $field"
-      xo artifact delete -d "$field"
+    for resource_file in artifact_*.jq resource_*.jq; do
+      [ -f "$resource_file" ] || continue
+      field=$(echo "$resource_file" | sed -E 's/^(artifact|resource)_(.*)\.jq$/\2/')
+      echo -e "\nDeleting resource \"$MASSDRIVER_INSTANCE_ID-$field\" from Massdriver..."
+      xo resource delete -d "$field" || echo -e "${YELLOW}Warning: failed to delete resource for field $field. Continuing decommission.${NC}"
     done
     ;;
 
