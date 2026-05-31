@@ -10,7 +10,7 @@ ARG CHECKOV_VERSION
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl unzip make jq gnupg && \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl unzip jq gnupg && \
     curl -s https://api.github.com/repos/massdriver-cloud/xo/releases/latest | jq -r '.assets[] | select(.name | contains("linux-amd64")) | .browser_download_url' | xargs curl -sSL -o xo.tar.gz && tar -xvf xo.tar.gz -C /tmp && mv /tmp/xo /usr/local/bin/ && rm xo.tar.gz && \
     curl -sSL https://github.com/bridgecrewio/checkov/releases/download/${CHECKOV_VERSION}/checkov_linux_X86_64.zip -o checkov.zip && unzip checkov.zip && mv dist/checkov /usr/local/bin/ && rm -rf checkov.zip dist && \
     curl -sSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > /usr/share/keyrings/microsoft.gpg && \

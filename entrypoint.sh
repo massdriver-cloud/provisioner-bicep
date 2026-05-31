@@ -52,6 +52,7 @@ evaluate_checkov() {
 name_prefix=$(jq -r '.md_metadata.name_prefix' "$params_path")
 scope=$(jq -r '.scope // "group"' "$config_path")
 location=$(jq -r '.location // .region // "eastus"' "$config_path")
+show_output=$(jq_bool_default '.show_output' false "$config_path")
 action_on_unmanage=$(jq -r '.action_on_unmanage // "deleteAll"' "$config_path")
 deny_settings_mode=$(jq -r '.deny_settings_mode // "none"' "$config_path")
 
@@ -220,11 +221,14 @@ case "$MASSDRIVER_DEPLOYMENT_ACTION" in
 
     echo -e "Deploying stack $stack_name..."
     if ! az stack "$scope" create "${create_flags[@]}" "${flags[@]}" --name "$stack_name" --template-file template.bicep --parameters @params.json --parameters @connections.json > create_output.json; then
+      [ "$show_output" = "true" ] && cat create_output.json
       echo -e "${RED}Stack $stack_name deployment failed.${NC}"
-      cat create_output.json
       exit 1
     fi
-    jq '.outputs // {} | with_entries(.value = .value.value)' create_output.json | tee outputs.json
+    # The create output contains the deployment outputs nested within it, and may
+    # contain secrets, so it is printed only when show_output is enabled.
+    [ "$show_output" = "true" ] && cat create_output.json
+    jq '.outputs // {} | with_entries(.value = .value.value)' create_output.json > outputs.json
     echo -e "${GREEN}Stack $stack_name deployed successfully.${NC}"
 
     jq -s '{params:.[0],connections:.[1],envs:.[2],secrets:.[3],outputs:.[4]}' "$params_path" "$connections_path" "$envs_path" "$secrets_path" outputs.json > resource_inputs.json
