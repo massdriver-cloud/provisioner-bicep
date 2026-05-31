@@ -65,34 +65,93 @@ checkov_enabled=$(jq_bool_default '.checkov.enable' true "$config_path")
 checkov_quiet=$(jq_bool_default '.checkov.quiet' true "$config_path")
 checkov_halt_on_failure=$(jq_bool_default '.checkov.halt_on_failure' false "$config_path")
 
-# Extract auth
-# Try to get azure_service_principal from config.json, then fall back to connections.json
-azure_auth=$(jq -r '.azure_service_principal // empty' "$config_path" 2>/dev/null || true)
+# ---------------------------------------------------------------------------
+# Azure authentication
+#
+# Field resolution (config overlays the connection per-field; whichever single
+# connection is found is used, and config alone is fine if neither exists):
+#   1. config.json      .azure_authentication            (manual overlay, flat)
+#   2. connections.json .azure_authentication            (connection, flat)    } first
+#   3. connections.json .azure_service_principal.data    (legacy conn, .data)  } found
+#
+# Auth-method detection then runs on the resolved fields:
+#   1. secret present      -> static SP
+#   2. federated token env -> workload identity
+#   3. client_id           -> user-assigned MI
+#   4. else                -> system-assigned MI
+# subscription_id is independent of the method.
+# ---------------------------------------------------------------------------
 
-if [ -z "$azure_auth" ]; then
-  azure_auth=$(jq -r '.azure_service_principal // empty' "$connections_path" 2>/dev/null || true)
-fi
+# Overlay config.azure_authentication on top of whichever connection is found.
+auth=$(jq -s '
+    (.[1].azure_authentication // .[1].azure_service_principal.data // {}) as $conn
+  | (.[0].azure_authentication // {})                                   as $cfg
+  | $conn * $cfg
+' "$config_path" "$connections_path")
 
-# Check if azure_auth is still empty, and exit since we don't have auth info
-if [ -z "$azure_auth" ]; then
-  echo -e "${RED}Error: No Azure credentials found. Please refer to the provisioner documentation for specifying Azure credentials.${NC}"
+azure_client_id=$(echo "$auth"       | jq -r '.client_id // empty')
+azure_client_secret=$(echo "$auth"   | jq -r '.client_secret // empty')
+azure_tenant_id=$(echo "$auth"       | jq -r '.tenant_id // empty')
+azure_subscription_id=$(echo "$auth" | jq -r '.subscription_id // empty')
+
+# The workload-identity webhook injects these; let resolved config/connection win.
+azure_client_id="${azure_client_id:-${AZURE_CLIENT_ID:-}}"
+azure_tenant_id="${azure_tenant_id:-${AZURE_TENANT_ID:-}}"
+federated_token_file="${AZURE_FEDERATED_TOKEN_FILE:-}"
+
+auth_fail() {  # $1 = method, $2 = hint
+  echo -e "${RED}Azure authentication failed (${1}).${NC}" >&2
+  echo -e "${RED}${2}${NC}" >&2
   exit 1
+}
+
+if [ -n "$azure_client_secret" ]; then
+  echo "Authenticating to Azure with a service principal secret (client_id: ${azure_client_id:-<unset>})..."
+  missing=()
+  [ -z "$azure_client_id" ] && missing+=("client_id")
+  [ -z "$azure_tenant_id" ] && missing+=("tenant_id")
+  [ ${#missing[@]} -gt 0 ] && auth_fail "service principal secret" \
+    "client_secret was provided but these required fields are missing: ${missing[*]}."
+  az login --service-principal -u "$azure_client_id" -p "$azure_client_secret" -t "$azure_tenant_id" >/dev/null \
+    || auth_fail "service principal secret" \
+       "Verify client_id, client_secret, and tenant_id are correct and the secret has not expired."
+
+elif [ -n "$federated_token_file" ]; then
+  echo "Authenticating to Azure with workload identity (federated token)..."
+  missing=()
+  [ -z "$azure_client_id" ] && missing+=("client_id / AZURE_CLIENT_ID")
+  [ -z "$azure_tenant_id" ] && missing+=("tenant_id / AZURE_TENANT_ID")
+  [ ${#missing[@]} -gt 0 ] && auth_fail "workload identity" \
+    "AZURE_FEDERATED_TOKEN_FILE is set but these are missing: ${missing[*]}. Is the webhook injecting them / the service account annotated?"
+  [ -r "$federated_token_file" ] || auth_fail "workload identity" \
+    "Federated token file '$federated_token_file' is not readable."
+  az login --service-principal -u "$azure_client_id" -t "$azure_tenant_id" \
+    --federated-token "$(cat "$federated_token_file")" >/dev/null \
+    || auth_fail "workload identity" \
+       "The federated credential may not be configured on the app/identity for this cluster's OIDC issuer + service account."
+
+elif [ -n "$azure_client_id" ]; then
+  echo "Authenticating to Azure with a user-assigned managed identity (client_id: ${azure_client_id})..."
+  az login --identity --username "$azure_client_id" >/dev/null \
+    || auth_fail "user-assigned managed identity" \
+       "Is this identity assigned to the node, and is IMDS reachable from the pod?"
+
+else
+  echo "Authenticating to Azure with a system-assigned managed identity..."
+  echo -e "${YELLOW}Note: system-assigned managed identity is generally unavailable to Kubernetes pods. If this is an AKS pod, you almost certainly want workload identity instead.${NC}"
+  az login --identity >/dev/null \
+    || auth_fail "system-assigned managed identity" \
+       "No client_secret, no federated token, and no usable managed identity. For an AKS pod, configure workload identity."
 fi
 
-# Extract fields from azure_service_principal and validate they are not empty
-# We expect the azure_service_principal to be a flat object with client_id, client_secret, tenant_id, and subscription_id fields
-# but we also check for the fields being nested under a "data" object (to support legacy formats)
-azure_client_id=$(echo "$azure_auth" | jq -r '.client_id // .data.client_id // empty')
-azure_client_secret=$(echo "$azure_auth" | jq -r '.client_secret // .data.client_secret // empty')
-azure_tenant_id=$(echo "$azure_auth" | jq -r '.tenant_id // .data.tenant_id // empty')
-azure_subscription_id=$(echo "$azure_auth" | jq -r '.subscription_id // .data.subscription_id // empty')
+echo -e "${GREEN}Authenticated to Azure.${NC}\n"
 
-for var in azure_client_id azure_client_secret azure_tenant_id; do
-  if [ -z "${!var}" ]; then
-    echo -e "${RED}Error: Missing required field $var in azure_service_principal.${NC}"
-    exit 1
-  fi
-done
+# subscription_id: use if provided, otherwise the identity's default subscription.
+if [ -n "$azure_subscription_id" ]; then
+  az account set --subscription "$azure_subscription_id" \
+    || auth_fail "subscription selection" \
+       "Could not switch to subscription '$azure_subscription_id'. Does this identity have access to it?"
+fi
 
 # TODO: this can eventually be removed after MASSDRIVER_PACKAGE_NAME is fully deprecated
 if [ -z "${MASSDRIVER_INSTANCE_ID:-}" ]; then
@@ -104,20 +163,6 @@ cd "bundle/$MASSDRIVER_STEP_PATH"
 # Manipulate params/connections to fit Bicep format and write to file
 jq 'with_entries(.value |= {value: .})' "$connections_path" > connections.json
 jq 'with_entries(.value |= {value: .})' "$params_path" > params.json
-
-# Authenticate with Azure using the service principal
-echo "Authorizing to Azure using service principal..."
-if ! az login --service-principal -u "$azure_client_id" -p "$azure_client_secret" -t "$azure_tenant_id"; then
-  echo -e "${RED}Authentication failed. Please check the Azure credentials and refer to provisioner documentation.${NC}"
-  exit 1
-fi
-
-# If subscription_id is provided, switch to it; otherwise fall back to the service
-# principal's default subscription.
-if [ -n "$azure_subscription_id" ]; then
-  az account set --subscription "$azure_subscription_id"
-fi
-echo -e "${GREEN}Authentication successful.${NC}\n"
 
 # Set flags for az stack commands
 flags=(--action-on-unmanage "$action_on_unmanage")
