@@ -7,14 +7,18 @@ ARG UID=10001
 FROM ${RUN_IMG} AS build
 ARG AZURE_CLI_VERSION
 ARG CHECKOV_VERSION
+# set automatically by buildx to the platform being built (amd64, arm64)
+ARG TARGETARCH
 
+# checkov names its amd64 release X86_64 rather than amd64
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl unzip jq gnupg && \
-    curl -s https://api.github.com/repos/massdriver-cloud/xo/releases/latest | jq -r '.assets[] | select(.name | contains("linux-amd64")) | .browser_download_url' | xargs curl -sSL -o xo.tar.gz && tar -xvf xo.tar.gz -C /tmp && mv /tmp/xo /usr/local/bin/ && rm xo.tar.gz && \
-    curl -sSL https://github.com/bridgecrewio/checkov/releases/download/${CHECKOV_VERSION}/checkov_linux_X86_64.zip -o checkov.zip && unzip checkov.zip && mv dist/checkov /usr/local/bin/ && rm -rf checkov.zip dist && \
+    curl -s https://api.github.com/repos/massdriver-cloud/xo/releases/latest | jq -r --arg arch "linux-${TARGETARCH}" '.assets[] | select(.name | contains($arch)) | .browser_download_url' | xargs curl -sSL -o xo.tar.gz && tar -xvf xo.tar.gz -C /tmp && mv /tmp/xo /usr/local/bin/ && rm xo.tar.gz && \
+    CHECKOV_ARCH=$([ "$TARGETARCH" = "amd64" ] && echo X86_64 || echo "$TARGETARCH") && \
+    curl -sSL https://github.com/bridgecrewio/checkov/releases/download/${CHECKOV_VERSION}/checkov_linux_${CHECKOV_ARCH}.zip -o checkov.zip && unzip checkov.zip && mv dist/checkov /usr/local/bin/ && rm -rf checkov.zip dist && \
     curl -sSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > /usr/share/keyrings/microsoft.gpg && \
-    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft.gpg] https://packages.microsoft.com/repos/azure-cli/ bookworm main"  > /etc/apt/sources.list.d/azure-cli.list && \
+    echo "deb [arch=${TARGETARCH} signed-by=/usr/share/keyrings/microsoft.gpg] https://packages.microsoft.com/repos/azure-cli/ bookworm main"  > /etc/apt/sources.list.d/azure-cli.list && \
     apt-get update && \
     if [ "$AZURE_CLI_VERSION" = "latest" ]; then \
         apt-get install -y --no-install-recommends azure-cli; \
